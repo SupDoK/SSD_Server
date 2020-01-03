@@ -63,64 +63,32 @@ public class SSDServer {
                      ObjectInputStream iin = new ObjectInputStream(s.getInputStream())) {
                     int nbGenerated;
 
-                    String helloClient = (String)iin.readObject();
+                    //Receive HELLO CLIENT !
+                    //MESSAGE 1
+                    String signedHelloClient = (String)iin.readObject();
+                    //MESSAGE 2
                     PublicKey ClientPublicKey =  (PublicKey)iin.readObject() ;
-                    String signature =  (String)iin.readObject();
+                    //String signature =  (String)iin.readObject();
+                    String helloClient = signedHelloClient.split(":")[0];
+                    String signature = signedHelloClient.split(":")[1];
 
                     if(!helloClient.equals("Client Hello")){
                         //TODO
-                    }
-                    boolean banswer = verify(helloClient , signature , ClientPublicKey);
-                    System.out.println(banswer);
-                    if(!banswer){
-                        //TODO
+                        boolean banswer = verify(helloClient , signature , ClientPublicKey);
+                        System.out.println(banswer);
+                        if(!banswer){
+                            //TODO
+                        }
                     }
 
+                    //LOAD certificate !
                     CertificateFactory fact = CertificateFactory.getInstance("X.509");
                     FileInputStream is = new FileInputStream ("D:\\SSD\\Certificate.pem");
                     X509Certificate cer = (X509Certificate) fact.generateCertificate(is);
-
-                    oout.writeObject(cer);
-
-                    String AESKey = (String)iin.readObject();
-
-                    String Key = AESKey.split(":")[0];
-                    String date = AESKey.split(":")[1];
-
-                    System.out.println(date);
-                    System.out.println(Key);
-
-                    //DateFormat df = new SimpleDateFormat("yyyy-MM-dd-hh-mm-ss");
-
-                    String[] splitted = date.split("-");
-
-                    Calendar construct = Calendar.getInstance();
-
-                    construct.set(Calendar.YEAR , Integer.parseInt(splitted[0]));
-                    construct.set(Calendar.MONTH , Integer.parseInt(splitted[1]));
-                    construct.set(Calendar.DAY_OF_MONTH , Integer.parseInt(splitted[2]));
-
-                    construct.set(Calendar.HOUR , Integer.parseInt(splitted[3]));
-                    construct.set(Calendar.MINUTE , Integer.parseInt(splitted[4]));
-                    construct.set(Calendar.SECOND , Integer.parseInt(splitted[5]));
-
-                    construct.add(Calendar.SECOND, 360);
-                    Date toCompareplus5 = construct.getTime();
-                    Date currentDate = new Date();
-
-                    System.out.println(currentDate);
-                    System.out.println(toCompareplus5);
-
-                    if(toCompareplus5.after(currentDate)){
-                        //TODO
-                        System.out.println("C OK BOUBOUL");
-                    }
-
-                    System.out.println(Key);
-
                     String keyPath = "D:\\SSD\\TAMERSSDKey.der";
                     File privKeyFile = new File(keyPath);
 
+                    //LOAD private key !
                     DataInputStream dis = new DataInputStream(new FileInputStream(privKeyFile));
                     byte[] privKeyBytes = new byte[(int)privKeyFile.length()];
                     dis.read(privKeyBytes);
@@ -130,13 +98,28 @@ public class SSDServer {
                     PKCS8EncodedKeySpec privSpec = new PKCS8EncodedKeySpec(privKeyBytes);
                     RSAPrivateKey privKey = (RSAPrivateKey) keyFactory.generatePrivate(privSpec);
 
+                    //Generate AES key !
+                    KeyGenerator keyGen = KeyGenerator.getInstance("AES");
+                    keyGen.init(256); // for example
+                    SecretKey secretKey = keyGen.generateKey();
 
-                    Cipher cipher2c = Cipher.getInstance("RSA/ECB/PKCS1Padding");
-                    cipher2c.init(Cipher.DECRYPT_MODE, privKey);
-                    SecretKeySpec secretKey = new SecretKeySpec(cipher2c.doFinal(Base64.getDecoder().decode(Key)), "AES");
+                    //Encrypt AES key with RSA
+                    Cipher cipher = Cipher.getInstance("RSA/ECB/PKCS1Padding");
+                    cipher.init(Cipher.ENCRYPT_MODE, ClientPublicKey);
+                    byte[] crypteedKey = cipher.doFinal(secretKey.getEncoded());
+
+                    String cryptedkeyString = Base64.getEncoder().encodeToString(crypteedKey);
+
+                    //Send certificate
+                    //MESSAGE 3
+                    oout.writeObject(cer);
+                    // Send encrypted key !
+                    //MESSAGE 4
+                    String message4 = timeMessage(cryptedkeyString);
+                    oout.writeObject(message4+"_"+sign(message4, privKey));
 
                     //Wipe data !
-                    cipher2c = null;
+                    //cipher2c = null;
                     privSpec = null;
                     keyFactory= null;
                     privKeyBytes = null;
@@ -144,44 +127,33 @@ public class SSDServer {
                     //privKey = null;
                     System.gc();
 
+                    //MESSAGE 6
+                    String messageFromClient0 = (String)iin.readObject();
+                    String receivedMessage = prepareReceive(messageFromClient0,secretKey,ClientPublicKey);
+                    System.out.println(receivedMessage);
 
-                    //TODO Generate random IV
-                    SecureRandom random = new SecureRandom();
-                    byte[] ivSpec = new byte[16];
-                    random.nextBytes(ivSpec);
-                    //System.out.println(new String(ivSpec));
+                    //Send server secure handshake
+                    String messageToSends = prepareSend("Server Secure Handshake",secretKey ,privKey );
+                    //MESSAGE 8
+                    oout.writeObject(messageToSends);
 
-
-                    String encodedString = encryptData("Hello Server",secretKey,new IvParameterSpec(ivSpec));
-                    //Envoie du message chiffré + IV
-
-                    oout.writeObject(ivSpec);
-                    oout.writeObject(encodedString);
-                    oout.writeObject(sign(encodedString , privKey));
-
-                    System.out.println(encodedString);
-
-                    byte[] ivSpec2 = ( byte[])iin.readObject();
-
-                    String messageFromClient = (String)iin.readObject();
-                    System.out.println(messageFromClient);
-
+                    //Receive user credentials
+                    //MESSAGE 9
+                    String messageFromClient1 = (String)iin.readObject();
+                    String receivedMessage1 = prepareReceive(messageFromClient1,secretKey,ClientPublicKey);
+                    System.out.println(receivedMessage1);
                     //check if iv is in the cache
-                    if(checkIVCache(ivSpec2)){
-                        //TODO
-                        throw new Exception("REUSED IV KEY");
-                    }
+                    //if(checkIVCache(ivSpec2)){
+                      //  //TODO
+                      //  throw new Exception("REUSED IV KEY");
+                   // }
 
-                    String decripted = decryptData(messageFromClient,secretKey,new IvParameterSpec(ivSpec2));
-                    //stack iv in the cache
-                    ivCache[ivGenerated] = ivSpec2;
-                    ivGenerated++;
+                   //stack iv in the cache
+                    //ivCache[ivGenerated] = ivSpec2;
+                    //ivGenerated++;
 
-                    System.out.println( decripted);
-
-                    String A = decripted.split(":")[0];
-                    String B = decripted.split(":")[1];
-
+                    String A = receivedMessage1.split("-")[0];
+                    String B = receivedMessage1.split("-")[1];
 
                     System.out.println("Je suis "+A+" et mon pwd est : "+B);
 
@@ -189,15 +161,23 @@ public class SSDServer {
 
                     if (!status.equals("NOTHING")){
 
-                        oout.writeObject(A+" as good credentials !");
+                        //Send connection answer
+                        String messageToSends2 = prepareSend(A+" as good credentials !",secretKey ,privKey );
+                        //MESSAGE 10
+                        oout.writeObject(messageToSends2);
+
                         nbGenerated = SendMail(A);
                         System.out.println(nbGenerated);
 
                         boolean bouboul = true;
 
                         while (bouboul){
+
+                            //Receive user credentials
+                            //MESSAGE 11
                             String code = (String)iin.readObject();
-                            System.out.println("CODE RECU : "+code);
+                            String code0 = prepareReceive(code,secretKey,ClientPublicKey);
+                            System.out.println("CODE RECU : "+code0);
 
                             if(code.equals(nbGenerated+"")){
                                 String sentToken = status+"_"+12345;
@@ -261,7 +241,10 @@ public class SSDServer {
                         }
 
                     }else{
-                        oout.writeObject(A+" does not exist ! ");
+                        //Send connection answer bis
+                        String messageToSends2 = prepareSend(A+" does not exist ! ",secretKey ,privKey );
+                        //MESSAGE 10bis
+                        oout.writeObject(messageToSends2);
                     }
 
                     oout.flush();
@@ -278,6 +261,84 @@ public class SSDServer {
             communication2.start();
 
         }
+    }
+
+    private String prepareSend(String data, SecretKey AESKey, PrivateKey privateKey) throws Exception {
+
+        //TODO Generate random IV
+        SecureRandom random = new SecureRandom();
+        byte[] ivSpec0 =  new byte[16];
+
+        random.nextBytes(ivSpec0);
+        String message5 = encryptData(data,AESKey,new IvParameterSpec(ivSpec0));
+        String messageToSend = Base64.getEncoder().encodeToString(ivSpec0)+":"+timeMessage(message5);
+
+        return messageToSend+"_"+sign(messageToSend , privateKey);
+    }
+
+    private String prepareReceive(String signedEncString, SecretKey AESKey, PublicKey publicKey) throws Exception {
+
+        String encMessage = signedEncString.split("_")[0];
+        String signature2 = signedEncString.split("_")[1];
+
+        boolean banswer0 = verify(encMessage , signature2 , publicKey);
+        System.out.println(banswer0);
+        if(!banswer0){
+            //TODO
+        }
+
+        //Check date
+        boolean ok0 = checkDates(encMessage.split(":")[1] , encMessage.split(":")[2]);
+        System.out.println(ok0);
+        if(!ok0){
+            //TODO
+        }
+
+        //Decipher message
+        String decryptedMessage = decryptData(encMessage.split(":")[1] , AESKey ,new IvParameterSpec(Base64.getDecoder().decode(encMessage.split(":")[0])));
+
+        return decryptedMessage;
+    }
+
+    private boolean checkDates(String Key , String date){
+
+        System.out.println(date);
+        System.out.println(Key);
+
+        //DateFormat df = new SimpleDateFormat("yyyy-MM-dd-hh-mm-ss");
+
+        String[] splitted = date.split("-");
+
+        Calendar construct = Calendar.getInstance();
+
+        construct.set(Calendar.YEAR , Integer.parseInt(splitted[0]));
+        construct.set(Calendar.MONTH , Integer.parseInt(splitted[1]));
+        construct.set(Calendar.DAY_OF_MONTH , Integer.parseInt(splitted[2]));
+
+        construct.set(Calendar.HOUR , Integer.parseInt(splitted[3]));
+        construct.set(Calendar.MINUTE , Integer.parseInt(splitted[4]));
+        construct.set(Calendar.SECOND , Integer.parseInt(splitted[5]));
+
+        construct.add(Calendar.SECOND, 360);
+        Date toCompareplus5 = construct.getTime();
+        Date currentDate = new Date();
+
+        System.out.println(currentDate);
+        System.out.println(toCompareplus5);
+
+        if(toCompareplus5.after(currentDate)){
+            //TODO
+            System.out.println("C OK BOUBOUL");
+            return true;
+        }
+
+        return false;
+    }
+
+    private String timeMessage(String message){
+        DateFormat df = new SimpleDateFormat("yyyy-MM-dd-hh-mm-ss");
+        Date currentDate = new Date();
+        return message+":"+df.format(currentDate);
     }
 
     private boolean checkIVCache(byte[] toCheckIV){
